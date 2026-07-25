@@ -1,4 +1,7 @@
 import anthropic
+import os
+import sys
+import json
 
 client = anthropic.Anthropic()
 
@@ -33,39 +36,38 @@ def read_file(file_path):
         return f"Error: could not read '{file_path}': {e}"
 
 messages = [
-    {"role": "user", "content": "how many lines are in hello.py?",}
+    {"role": "user", "content": "what does agent.py import?",}
 
 ]
 
-response = client.messages.create(
-    model="claude-sonnet-5",
-    max_tokens = 1024,
-    tools=[rf_tool],
-    messages=messages
-)
+while True:
+    response = client.messages.create(
+        model="claude-sonnet-5",
+        max_tokens = 1024,
+        tools=[rf_tool],
+        messages=messages
+    )
 
-messages.append({
-    "role": "assistant",
-    "content": response.content
-})
+    print(f"--- stop_reason: {response.stop_reason}")
 
-block = response.content[-1]
-file_text  = read_file(block.input['file_path'])
 
-messages.append({
-    "role": "user",
-    "content": [{
-        "type": "tool_result",
-        "tool_use_id": block.id,
-        "content": file_text
-    }]
-})
+    messages.append({
+        "role": "assistant",
+        "content": response.content
+    })
 
-response2 = client.messages.create(
-    model="claude-sonnet-5",
-    max_tokens = 1024,
-    tools = [rf_tool],
-    messages=messages
-)
+    if response.stop_reason == "end_turn":
+        print(response.content[-1].text)
+        break
 
-print(response2.content[-1].text)
+    block = response.content[-1]
+    file_text  = read_file(block.input['file_path'])
+
+    messages.append({
+        "role": "user",
+        "content": [{
+            "type": "tool_result",
+            "tool_use_id": block.id,
+            "content": file_text
+        }]
+    })
