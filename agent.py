@@ -88,11 +88,11 @@ def write_file(file_path, content):
 
 
 messages = [
-    {"role": "user", "content": "create a new file called python.py and make a random simple function"}
+    {"role": "user", "content": "can you write a file called haiku with a haiku in it and tell me which is longer that file or hello.py"}
 
 ]
 
-while True:
+for turn in range(10):
     response = client.messages.create(
         model="claude-sonnet-5",
         max_tokens = 1024,
@@ -112,27 +112,36 @@ while True:
         print(response.content[-1].text)
         break
 
-    block = response.content[-1]
+    tool_results = [
+    ]
 
-    if block.name == 'read_file':
-        result = read_file(**block.input)
+    for block in response.content:
+        if block.type != "tool_use":
+            continue
 
-    elif block.name == 'write_file':
-        result = write_file(**block.input )
-        print(f"WRITE to {block.input['file_path']}:")
-        print(block.input['content'][:300])
-        if input("approve? (y/n) ") != "y":
-            result = "Error: user denied the write."
+        if block.name == 'read_file':
+            result = read_file(**block.input)
 
-    else:
-        result = f"Error: unknown tool '{block.name}'"
+        elif block.name == 'write_file':
 
+            print(f"WRITE to {block.input['file_path']}:")
+            print(block.input['content'][:300])
 
-    messages.append({
-        "role": "user",
-        "content": [{
-            "type": "tool_result",
-            "tool_use_id": block.id,
-            "content": result
-        }]
+            if input("approve? (y/n) ").strip().lower() == "y":
+                result = write_file(**block.input )
+            else:
+                result = "Error: user denied the write."
+
+        else:
+            result = f"Error: unknown tool '{block.name}'"
+
+        tool_results.append({
+        "type": "tool_result",
+        "tool_use_id": block.id,
+        "content": result,
     })
+
+    messages.append({"role": "user", "content": tool_results})
+
+else:
+    print("Hit max turns without finishing.")
