@@ -28,6 +28,33 @@ rf_tool ={
     }
 }
 
+wf_tool = {
+    "name": "write_file",
+    "description": (
+        "Writes text to a file at the given path, creating it if it does not exist. "
+        "Returns the number of characters and lines written on success. "
+        "If the file already exists, overwrites it but return the file with the old contents in the success message. "
+        "Returns a message beginning with 'Error:' if the write fails — "
+        "most commonly because permission issues or directory does not exist. "
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": (
+                    "Path relative to the project root, using forward slashes. "
+                )
+            },
+            "content": {
+                "type": "string",
+                "description": "The content to write to the file."
+            }
+        },
+        "required": ["file_path", "content"]
+    }
+}
+
 def read_file(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as file:
@@ -35,8 +62,33 @@ def read_file(file_path):
     except Exception as e:
         return f"Error: could not read '{file_path}': {e}"
 
+def write_file(file_path, content):
+    content_lines = content.count('\n') + (0 if content.endswith('\n') else 1)
+    old_contents = None
+    if os.path.exists(file_path):
+        old_contents = read_file(file_path)
+        lines = len(old_contents.splitlines())
+    try:
+        with open(file_path, 'w', encoding='utf-8') as file:
+            chars_written = file.write(content)
+            if old_contents is not None:
+                if lines >= 500:
+                    return f"file path already exists and overwritten {lines} of old content - success with {chars_written} characters and {content_lines} lines written"
+                return f"file path already existed and was overwritten, \n--- previous contents \n{old_contents}\n--- end of previous contents\n - success with {chars_written} characters and {content_lines} lines written"
+            else:
+                return f"{file_path} was written with {chars_written} characters and {content_lines} lines written"
+
+    except Exception as e:
+        return f"Error: could not write '{file_path}': {e}"
+
+
+
+
+
+
+
 messages = [
-    {"role": "user", "content": "what does agent.py import?",}
+    {"role": "user", "content": "create a new file called python.py and make a random simple function"}
 
 ]
 
@@ -44,7 +96,7 @@ while True:
     response = client.messages.create(
         model="claude-sonnet-5",
         max_tokens = 1024,
-        tools=[rf_tool],
+        tools=[rf_tool, wf_tool],
         messages=messages
     )
 
@@ -61,13 +113,26 @@ while True:
         break
 
     block = response.content[-1]
-    file_text  = read_file(block.input['file_path'])
+
+    if block.name == 'read_file':
+        result = read_file(**block.input)
+
+    elif block.name == 'write_file':
+        result = write_file(**block.input )
+        print(f"WRITE to {block.input['file_path']}:")
+        print(block.input['content'][:300])
+        if input("approve? (y/n) ") != "y":
+            result = "Error: user denied the write."
+
+    else:
+        result = f"Error: unknown tool '{block.name}'"
+
 
     messages.append({
         "role": "user",
         "content": [{
             "type": "tool_result",
             "tool_use_id": block.id,
-            "content": file_text
+            "content": result
         }]
     })
