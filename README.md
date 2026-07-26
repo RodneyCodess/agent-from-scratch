@@ -1,6 +1,8 @@
 # agent-from-scratch
 
-A tool-using LLM agent built without any agent framework — no LangChain, no orchestration library. Raw Anthropic API calls and a hand-written loop. The point is to understand the machinery frameworks hide: how a model requests a tool, how results get fed back, and where the real engineering problems live. Week 1 of 4: single tool, working multi-turn loop.
+A tool-using LLM agent built without any agent framework — no LangChain, no orchestration library. Raw Anthropic API calls and a hand-written loop. The point is to understand the machinery frameworks hide: how a model requests a tool, how results get fed back, and where the real engineering problems live. Week 2 of 4: multi-tool, working multi-turn loop.
+
+next tool to working on is shell exec - agent should be able to run bash commands
 
 ### requiremnts
 
