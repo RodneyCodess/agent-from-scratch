@@ -1,7 +1,6 @@
 import anthropic
 import os
-import sys
-import json
+import subprocess
 
 client = anthropic.Anthropic()
 
@@ -55,6 +54,32 @@ wf_tool = {
     }
 }
 
+se_tool = {
+    "name": "shell_exec",
+    "description": (
+        "Runs one or more shell commands and returns their output. "
+        "Commands execute in a bash shell with the project root as the working directory. "
+        "Returns the exit code, then stdout, then stderr, in labelled sections. "
+        "A nonzero exit code is reported, not treated as a failure — some commands "
+        "exit nonzero as a normal result (grep exits 1 when it finds no matches). "
+        "Output longer than 5000 characters is truncated, and the result says so. "
+        "Commands are killed after 30 seconds, returning a message beginning with 'Error:'. "
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "commands": {
+                "type": "string",
+                "description": (
+                    "The command line to run. Pipes, redirects, and chaining with && "
+                    "are supported. Example: 'grep -rn TODO . | head -20'"
+                )
+            }
+        },
+        "required": ["commands"]
+    }
+}
+
 def read_file(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as file:
@@ -77,9 +102,43 @@ def write_file(file_path, content):
                 return f"file path already existed and was overwritten, \n--- previous contents \n{old_contents}\n--- end of previous contents\n - success with {chars_written} characters and {content_lines} lines written"
             else:
                 return f"{file_path} was written with {chars_written} characters and {content_lines} lines written"
-
     except Exception as e:
         return f"Error: could not write '{file_path}': {e}"
+
+def shell_exec(commands):
+    MAX_OUTPUT = 5000
+    try:
+        completed = subprocess.run(
+            commands,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return f"Error: command timed out after 30 seconds: {commands}"
+    except Exception as e:
+        return f"Error: could not run '{commands}': {e}"
+
+    exit_code = completed.returncode
+    stdout = completed.stdout
+    stderr = completed.stderr
+
+    if len(stdout) > MAX_OUTPUT:
+        stdout = stdout[:MAX_OUTPUT] + f"\n... [truncated, {len(stdout)} chars total]"
+    elif len(stdout) == 0:
+        stdout = "(empty)"
+
+    if len(stderr) > MAX_OUTPUT:
+        stderr = stderr[:MAX_OUTPUT] + f"\n... [truncated, {len(stderr)} chars total]"
+    elif len(stderr) == 0:
+        stderr = "(empty)"
+
+    labeled_string = f"exit code {exit_code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+
+    return labeled_string
+
+
 
 
 
@@ -88,7 +147,8 @@ def write_file(file_path, content):
 
 
 messages = [
-    {"role": "user", "content": "can you write a file called haiku with a haiku in it and tell me which is longer that file or hello.py"}
+
+    {"role": "user", "content": "grep zzzzqqq *.md"}
 
 ]
 
@@ -96,7 +156,7 @@ for turn in range(10):
     response = client.messages.create(
         model="claude-sonnet-5",
         max_tokens = 1024,
-        tools=[rf_tool, wf_tool],
+        tools=[rf_tool, wf_tool, se_tool],
         messages=messages
     )
 
@@ -131,6 +191,15 @@ for turn in range(10):
                 result = write_file(**block.input )
             else:
                 result = "Error: user denied the write."
+
+        elif block.name == 'shell_exec':
+            print(f"RUN: {block.input['commands']}")
+
+            if input("approve? (y/n) ").strip().lower() == "y":
+                result = shell_exec(**block.input )
+            else:
+                result = "ERROR: user denied run command"
+
 
         else:
             result = f"Error: unknown tool '{block.name}'"
