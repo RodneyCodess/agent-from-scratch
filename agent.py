@@ -1,8 +1,13 @@
 import anthropic
 import os
 import subprocess
+import json
+from datetime import datetime
 
 client = anthropic.Anthropic()
+
+LOG_PATH = f"logs/run-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
+MAX_OUTPUT = 5000
 
 
 # read file tool
@@ -106,7 +111,7 @@ def write_file(file_path, content):
         return f"Error: could not write '{file_path}': {e}"
 
 def shell_exec(commands):
-    MAX_OUTPUT = 5000
+
     try:
         completed = subprocess.run(
             commands,
@@ -115,6 +120,13 @@ def shell_exec(commands):
             text=True,
             timeout=30,
         )
+
+        log("shell_raw",
+        commands=commands,
+        exit_code=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr)
+
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after 30 seconds: {commands}"
     except Exception as e:
@@ -138,9 +150,10 @@ def shell_exec(commands):
 
     return labeled_string
 
-
-
-
+def log(event,**fields):
+    entry = {"ts": datetime.now().isoformat(), "event": event, **fields}
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+         f.write(json.dumps(entry) + "\n")
 
 
 
@@ -152,7 +165,13 @@ messages = [
 
 ]
 
+os.makedirs("logs", exist_ok=True)
+log("run_start", task=messages[0]["content"])
+
 for turn in range(10):
+
+    log("turn_start", turn=turn + 1)
+
     response = client.messages.create(
         model="claude-sonnet-5",
         max_tokens = 1024,
@@ -162,6 +181,12 @@ for turn in range(10):
 
     print(f"--- stop_reason: {response.stop_reason}")
 
+    log("model_response",
+    turn=turn + 1,
+    stop_reason=response.stop_reason,
+    input_tokens=response.usage.input_tokens,
+    output_tokens=response.usage.output_tokens)
+
 
     messages.append({
         "role": "assistant",
@@ -169,7 +194,9 @@ for turn in range(10):
     })
 
     if response.stop_reason == "end_turn":
-        print(response.content[-1].text)
+        text = response.content[-1].text
+        print(text)
+        log("final_answer", text=text)
         break
 
     tool_results = [
@@ -178,6 +205,8 @@ for turn in range(10):
     for block in response.content:
         if block.type != "tool_use":
             continue
+
+        log("tool_call", tool=block.name, input=block.input)
 
         if block.name == 'read_file':
             result = read_file(**block.input)
@@ -189,20 +218,27 @@ for turn in range(10):
 
             if input("approve? (y/n) ").strip().lower() == "y":
                 result = write_file(**block.input )
+                log("approval", tool=block.name, approved=True)
             else:
                 result = "Error: user denied the write."
+                log("approval", tool=block.name, approved=False)
 
         elif block.name == 'shell_exec':
             print(f"RUN: {block.input['commands']}")
 
             if input("approve? (y/n) ").strip().lower() == "y":
                 result = shell_exec(**block.input )
+                log("approval", tool=block.name, approved=True)
             else:
                 result = "ERROR: user denied run command"
+                log("approval", tool=block.name, approved=False)
 
 
         else:
             result = f"Error: unknown tool '{block.name}'"
+
+        log("tool_result", result=result)
+
 
         tool_results.append({
         "type": "tool_result",
@@ -214,3 +250,4 @@ for turn in range(10):
 
 else:
     print("Hit max turns without finishing.")
+    log("max_turns_hit", limit=10)
