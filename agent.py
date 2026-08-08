@@ -238,8 +238,26 @@ def shell_exec(commands):
 
 messages = [
 
-    {"role": "user", "content": "what issues are open on anthropics/anthropic-sdk-python?"}
+    {"role": "user", "content": "Read agent.py and the current README.md. Then rewrite README.md."
 
+    "Context you won't get from the code: this is a learning project — a tool-using "
+    "LLM agent built with no agent framework, just raw Anthropic API calls and a "
+    "hand-written loop. The point is to understand what frameworks hide. It's a "
+    "4-week build; weeks 1 and 2 are done (tools, error handling, turn limits, "
+    "logging, approval gates) and week 3 is context management. "
+
+    "Keep the existing Findings section — those are real bugs I hit and the "
+    "reasoning behind them. Add anything new you notice from reading the code. "
+
+    "Be honest in Known Limitations. Include that shell_exec is not sandboxed and "
+    "relies on human approval rather than isolation, that the approval logic is "
+    "duplicated across branches instead of driven by a lookup, and that the task is "
+    "hardcoded rather than interactive. "
+
+    "Document only what's actually in agent.py. Don't describe features that aren't "
+    "there. "
+
+    "Keep it under 100 lines."}
 ]
 
 os.makedirs("logs", exist_ok=True)
@@ -251,7 +269,7 @@ for turn in range(10):
 
     response = client.messages.create(
         model="claude-sonnet-5",
-        max_tokens=1024,
+        max_tokens=8192,
         tools=[rf_tool, wf_tool, se_tool, gh_issues],
         messages=messages
     )
@@ -275,8 +293,12 @@ for turn in range(10):
         log("final_answer", text=text)
         break
 
-    tool_results = [
-    ]
+    if response.stop_reason == "max_tokens":
+        print("Response was cut off by max_tokens.")
+        log("max_tokens_hit", turn=turn + 1)
+        break
+
+    tool_results = []
 
     for block in response.content:
         if block.type != "tool_use":
