@@ -3,6 +3,7 @@ import os
 import subprocess
 import json
 from datetime import datetime
+import requests
 
 client = anthropic.Anthropic()
 
@@ -10,8 +11,14 @@ LOG_PATH = f"logs/run-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
 MAX_OUTPUT = 5000
 
 
+def log(event, **fields):
+    entry = {"ts": datetime.now().isoformat(), "event": event, **fields}
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 # read file tool
-rf_tool ={
+rf_tool = {
     "name": "read_file",
     "description": (
         "Reads the contents of a file and returns it. "
@@ -85,12 +92,87 @@ se_tool = {
     }
 }
 
+gh_issues = {
+    "name": "gh_list_issues",
+    "description": (
+        "Lists issues on a public GitHub repository. Returns up to 10 issues, "
+        "each as a block: '#<number> [<state>] <title>' followed by the issue body, "
+        "clipped to 300 characters. Blocks are separated by blank lines. "
+        "Pull requests are excluded. "
+        "If the repository has no matching issues, returns a message saying so — "
+        "this is a valid result, not a failure. "
+        "Returns a message beginning with 'Error:' on failure. A 404 means the repo "
+        "was not found or is private; check the owner/name spelling rather than retrying "
+        "the same request. A rate-limit error means the request quota is exhausted; "
+        "report this and do not retry. A network error may be transient and is worth "
+        "retrying once."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "repo": {
+                "type": "string",
+                "description": "Repository in 'owner/name' form. Example: 'anthropics/anthropic-sdk-python'"
+            },
+            "state": {
+                "type": "string",
+                "description": "Which issues to return: 'open', 'closed', or 'all'. Defaults to 'open'."
+            }
+        },
+        "required": ["repo"]
+    }
+}
+
+
+def gh_list_issues(repo, state="open"):
+    url = f"https://api.github.com/repos/{repo}/issues"
+    params = {"state": state, "per_page": 10}
+    headers = {"Accept": "application/vnd.github+json"}
+
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=15)
+    except requests.exceptions.RequestException as e:
+        return f"Error: could not fetch issues from '{repo}': {e}"
+
+    if r.status_code == 404:
+        return f"Error: repository '{repo}' not found or is private."
+    if r.status_code == 403:
+        return "Error: GitHub rate limit exceeded. Do not retry."
+    if r.status_code != 200:
+        return f"Error: GitHub returned {r.status_code}: {r.text[:200]}"
+
+    issues = r.json()
+
+    blocks = []
+    for issue in issues:
+        if "pull_request" in issue:
+            continue
+
+        number = issue.get("number")
+        title = issue.get("title")
+        issue_state = issue.get("state")
+
+        body = issue.get("body")
+        if body is not None:
+            body = body[:300].replace("\n", " ")
+        else:
+            body = "No body provided."
+
+        blocks.append(f"#{number} [{issue_state}] {title}: {body}")
+
+    if not blocks:
+        return f"No {state} issues found in '{repo}'."
+
+    return "\n\n".join(blocks)
+
+
 def read_file(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as file:
             return file.read()
     except Exception as e:
         return f"Error: could not read '{file_path}': {e}"
+
 
 def write_file(file_path, content):
     content_lines = content.count('\n') + (0 if content.endswith('\n') else 1)
@@ -110,6 +192,7 @@ def write_file(file_path, content):
     except Exception as e:
         return f"Error: could not write '{file_path}': {e}"
 
+
 def shell_exec(commands):
 
     try:
@@ -122,14 +205,16 @@ def shell_exec(commands):
         )
 
         log("shell_raw",
-        commands=commands,
-        exit_code=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr)
+            commands=commands,
+            exit_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr)
 
     except subprocess.TimeoutExpired:
+        log("shell_timeout", commands=commands, timeout=30)
         return f"Error: command timed out after 30 seconds: {commands}"
     except Exception as e:
+        log("shell_error", commands=commands, error=str(e))
         return f"Error: could not run '{commands}': {e}"
 
     exit_code = completed.returncode
@@ -150,18 +235,10 @@ def shell_exec(commands):
 
     return labeled_string
 
-def log(event,**fields):
-    entry = {"ts": datetime.now().isoformat(), "event": event, **fields}
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-         f.write(json.dumps(entry) + "\n")
-
-
-
-
 
 messages = [
 
-    {"role": "user", "content": "grep zzzzqqq *.md"}
+    {"role": "user", "content": "what issues are open on anthropics/anthropic-sdk-python?"}
 
 ]
 
@@ -174,19 +251,18 @@ for turn in range(10):
 
     response = client.messages.create(
         model="claude-sonnet-5",
-        max_tokens = 1024,
-        tools=[rf_tool, wf_tool, se_tool],
+        max_tokens=1024,
+        tools=[rf_tool, wf_tool, se_tool, gh_issues],
         messages=messages
     )
 
     print(f"--- stop_reason: {response.stop_reason}")
 
     log("model_response",
-    turn=turn + 1,
-    stop_reason=response.stop_reason,
-    input_tokens=response.usage.input_tokens,
-    output_tokens=response.usage.output_tokens)
-
+        turn=turn + 1,
+        stop_reason=response.stop_reason,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens)
 
     messages.append({
         "role": "assistant",
@@ -217,34 +293,35 @@ for turn in range(10):
             print(block.input['content'][:300])
 
             if input("approve? (y/n) ").strip().lower() == "y":
-                result = write_file(**block.input )
                 log("approval", tool=block.name, approved=True)
+                result = write_file(**block.input)
             else:
-                result = "Error: user denied the write."
                 log("approval", tool=block.name, approved=False)
+                result = "Error: user denied the write."
 
         elif block.name == 'shell_exec':
             print(f"RUN: {block.input['commands']}")
 
             if input("approve? (y/n) ").strip().lower() == "y":
-                result = shell_exec(**block.input )
                 log("approval", tool=block.name, approved=True)
+                result = shell_exec(**block.input)
             else:
-                result = "ERROR: user denied run command"
                 log("approval", tool=block.name, approved=False)
+                result = "Error: user denied the command."
 
+        elif block.name == 'gh_list_issues':
+            result = gh_list_issues(**block.input)
 
         else:
             result = f"Error: unknown tool '{block.name}'"
 
         log("tool_result", result=result)
 
-
         tool_results.append({
-        "type": "tool_result",
-        "tool_use_id": block.id,
-        "content": result,
-    })
+            "type": "tool_result",
+            "tool_use_id": block.id,
+            "content": result,
+        })
 
     messages.append({"role": "user", "content": tool_results})
 
